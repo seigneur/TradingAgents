@@ -8,7 +8,7 @@ on:
     inputs:
       tickers:
         description: 'Space-separated tickers (e.g. BTC-USD ETH-USD)'
-        default: 'BTC-USD ETH-USD'
+        default: 'BTC-USD ETH-USD GC=F SI=F'
       date:
         description: 'Analysis date YYYY-MM-DD (default: yesterday)'
         default: ''
@@ -37,7 +37,7 @@ jobs:
           FRED_API_KEY: ${{ secrets.FRED_KEY }}
           TRADINGAGENTS_LLM_PROVIDER: anthropic
         run: |
-          TICKERS="${{ github.event.inputs.tickers || 'BTC-USD ETH-USD' }}"
+          TICKERS="${{ github.event.inputs.tickers || 'BTC-USD ETH-USD GC=F SI=F' }}"
           DATE_ARG="${{ github.event.inputs.date }}"
           if [ -n "$DATE_ARG" ]; then
             python scripts/daily_signal.py --tickers $TICKERS --date "$DATE_ARG"

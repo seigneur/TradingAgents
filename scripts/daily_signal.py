@@ -5,6 +5,7 @@ Usage:
   ANALYSIS_DATE is optional; defaults to today.
 """
 import argparse
+import html
 import os
 import sys
 import textwrap
@@ -55,7 +56,7 @@ def format_message(results: list[dict], analysis_date: str) -> str:
         lines.append(f"{emoji} <b>{ticker}</b>: {action}")
         if summary:
             wrapped = textwrap.shorten(summary, width=280, placeholder="…")
-            lines.append(f"  {wrapped}")
+            lines.append(f"  {html.escape(wrapped)}")
         if r.get("error"):
             lines.append(f"  ⚠️ {r['error']}")
         lines.append("")
@@ -66,7 +67,7 @@ def format_message(results: list[dict], analysis_date: str) -> str:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--tickers", nargs="+", default=["BTC-USD", "ETH-USD", "GC=F","SI=F"])
+    parser.add_argument("--tickers", nargs="+", default=["BTC-USD", "ETH-USD", "GC=F", "SI=F"])
     parser.add_argument("--date", default=str(date.today() - timedelta(days=1)))
     parser.add_argument("--provider", default=os.getenv("TRADINGAGENTS_LLM_PROVIDER", "anthropic"))
     parser.add_argument("--debug", action="store_true")

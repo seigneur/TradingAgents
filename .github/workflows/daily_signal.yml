@@ -8,7 +8,7 @@ on:
     inputs:
       tickers:
         description: 'Space-separated tickers (e.g. BTC-USD ETH-USD)'
-        default: 'BTC-USD ETH-USD GC=F SI=F'
+        default: 'BTC-USD ETH-USD XRP-USD LINK-USD GC=F SI=F'
       date:
         description: 'Analysis date YYYY-MM-DD (default: yesterday)'
         default: ''
@@ -39,7 +39,7 @@ jobs:
           DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}
           DASHBOARD_SECRET: ${{ secrets.DASHBOARD_SECRET }}
         run: |
-          TICKERS="${{ github.event.inputs.tickers || 'BTC-USD ETH-USD GC=F SI=F' }}"
+          TICKERS="${{ github.event.inputs.tickers || 'BTC-USD ETH-USD XRP-USD LINK-USD GC=F SI=F' }}"
           DATE_ARG="${{ github.event.inputs.date }}"
           if [ -n "$DATE_ARG" ]; then
             python scripts/daily_signal.py --tickers $TICKERS --date "$DATE_ARG"

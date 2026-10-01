@@ -117,7 +117,7 @@ def format_message(results: list[dict], analysis_date: str) -> str:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--tickers", nargs="+", default=["BTC-USD", "ETH-USD", "XRP-USD", "LINK-USD", "GC=F", "SI=F"])
+    parser.add_argument("--tickers", nargs="+", default=["BTC-USD", "ETH-USD", "XRP-USD", "LINK-USD", "GC=F"])
     parser.add_argument("--date", default=str(date.today() - timedelta(days=1)))
     parser.add_argument("--provider", default=os.getenv("TRADINGAGENTS_LLM_PROVIDER", "anthropic"))
     parser.add_argument("--debug", action="store_true")

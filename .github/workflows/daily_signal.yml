@@ -36,6 +36,8 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           FRED_API_KEY: ${{ secrets.FRED_KEY }}
           TRADINGAGENTS_LLM_PROVIDER: anthropic
+          DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}
+          DASHBOARD_SECRET: ${{ secrets.DASHBOARD_SECRET }}
         run: |
           TICKERS="${{ github.event.inputs.tickers || 'BTC-USD ETH-USD GC=F SI=F' }}"
           DATE_ARG="${{ github.event.inputs.date }}"

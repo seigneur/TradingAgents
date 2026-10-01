@@ -32,6 +32,24 @@ def get_close_price(ticker: str, analysis_date: str) -> float | None:
     return None
 
 
+def fetch_memory(dashboard_url: str, ticker: str, limit: int = 10) -> list[dict]:
+    try:
+        resp = requests.get(f"{dashboard_url}/api/signals", params={"ticker": ticker, "limit": limit}, timeout=10)
+        return resp.json()
+    except Exception:
+        return []
+
+
+def format_memory_context(signals: list[dict]) -> str:
+    if not signals:
+        return ""
+    lines = ["Previous signals (newest first):"]
+    for s in signals:
+        price_str = f" @ ${s['price_at_signal']:,.2f}" if s.get("price_at_signal") else ""
+        lines.append(f"  {s['analysis_date']}: {s['action']}{price_str}")
+    return "\n".join(lines)
+
+
 def post_to_dashboard(url: str, secret: str, ticker: str, action: str,
                       analysis_date: str, price: float | None, summary: str) -> None:
     try:
@@ -82,6 +100,13 @@ def format_message(results: list[dict], analysis_date: str) -> str:
         if summary:
             wrapped = textwrap.shorten(summary, width=280, placeholder="…")
             lines.append(f"  {html.escape(wrapped)}")
+        # Trend from memory
+        memory = r.get("memory", [])
+        if memory:
+            recent = [m["action"] for m in memory[:3]]
+            streak = len(set(recent)) == 1
+            trend_str = " · ".join(recent)
+            lines.append(f"  <i>Last {len(recent)}: {html.escape(trend_str)}{'  🔁' if streak else ''}</i>")
         if r.get("error"):
             lines.append(f"  ⚠️ {r['error']}")
         lines.append("")
@@ -110,12 +135,19 @@ def main():
     results = []
     for ticker in args.tickers:
         print(f"Analysing {ticker} for {args.date}…", flush=True)
+
+        memory = []
+        if dashboard_url:
+            memory = fetch_memory(dashboard_url, ticker, limit=10)
+            if memory:
+                print(format_memory_context(memory), flush=True)
+
         try:
             r = run_analysis(ticker, args.date, args.provider, args.debug)
-            results.append({"ticker": ticker, **r})
+            results.append({"ticker": ticker, "memory": memory, **r})
         except Exception as exc:
             print(f"  ERROR: {exc}", file=sys.stderr)
-            results.append({"ticker": ticker, "error": str(exc)})
+            results.append({"ticker": ticker, "memory": memory, "error": str(exc)})
 
     # Record signals to dashboard
     if dashboard_url and dashboard_secret:

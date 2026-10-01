@@ -1,8 +1,8 @@
 """
-Daily trading signal runner — sends analysis to Telegram.
+Daily trading signal runner — sends analysis to Telegram and records to dashboard.
 Usage:
   python scripts/daily_signal.py --tickers BTC-USD ETH-USD --date 2026-09-30
-  ANALYSIS_DATE is optional; defaults to today.
+  ANALYSIS_DATE is optional; defaults to yesterday.
 """
 import argparse
 import html
@@ -13,10 +13,37 @@ from datetime import date, timedelta
 
 import requests
 
+
 def send_telegram(token: str, chat_id: str, text: str) -> None:
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     resp = requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=15)
     resp.raise_for_status()
+
+
+def get_close_price(ticker: str, analysis_date: str) -> float | None:
+    try:
+        import yfinance as yf
+        d = date.fromisoformat(analysis_date)
+        hist = yf.Ticker(ticker).history(start=analysis_date, end=str(d + timedelta(days=4)))
+        if not hist.empty:
+            return float(hist["Close"].iloc[0])
+    except Exception as exc:
+        print(f"  Price fetch failed for {ticker}: {exc}", file=sys.stderr)
+    return None
+
+
+def post_to_dashboard(url: str, secret: str, ticker: str, action: str,
+                      analysis_date: str, price: float | None, summary: str) -> None:
+    try:
+        requests.post(
+            f"{url}/api/signal",
+            json={"ticker": ticker, "action": action, "analysis_date": analysis_date,
+                  "price_at_signal": price, "summary": summary},
+            headers={"X-API-Secret": secret},
+            timeout=10,
+        )
+    except Exception as exc:
+        print(f"  Dashboard post failed: {exc}", file=sys.stderr)
 
 
 def run_analysis(ticker: str, analysis_date: str, provider: str, debug: bool) -> dict:
@@ -29,7 +56,6 @@ def run_analysis(ticker: str, analysis_date: str, provider: str, debug: bool) ->
     config["max_risk_discuss_rounds"] = 1
     config["checkpoint_enabled"] = False
 
-    # Use cheaper/faster models for quick runs
     if provider == "anthropic":
         config["deep_think_llm"] = os.getenv("DEEP_THINK_LLM", "claude-sonnet-4-6")
         config["quick_think_llm"] = os.getenv("QUICK_THINK_LLM", "claude-haiku-4-5-20251001")
@@ -50,7 +76,6 @@ def format_message(results: list[dict], analysis_date: str) -> str:
         action = decision.get("action", "—").upper() if isinstance(decision, dict) else str(decision).upper()
         summary = decision.get("summary", "") if isinstance(decision, dict) else ""
 
-        # Emoji per action
         emoji = {"BUY": "🟢", "SELL": "🔴", "HOLD": "🟡", "SHORT": "🔻"}.get(action, "⚪")
 
         lines.append(f"{emoji} <b>{ticker}</b>: {action}")
@@ -79,6 +104,9 @@ def main():
         print("ERROR: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set", file=sys.stderr)
         sys.exit(1)
 
+    dashboard_url = os.environ.get("DASHBOARD_URL", "")
+    dashboard_secret = os.environ.get("DASHBOARD_SECRET", "")
+
     results = []
     for ticker in args.tickers:
         print(f"Analysing {ticker} for {args.date}…", flush=True)
@@ -88,6 +116,18 @@ def main():
         except Exception as exc:
             print(f"  ERROR: {exc}", file=sys.stderr)
             results.append({"ticker": ticker, "error": str(exc)})
+
+    # Record signals to dashboard
+    if dashboard_url and dashboard_secret:
+        for r in results:
+            if r.get("error"):
+                continue
+            decision = r.get("decision", {})
+            action = decision.get("action", "").upper() if isinstance(decision, dict) else str(decision).upper()
+            summary = decision.get("summary", "") if isinstance(decision, dict) else ""
+            price = get_close_price(r["ticker"], args.date)
+            post_to_dashboard(dashboard_url, dashboard_secret, r["ticker"], action, args.date, price, summary)
+            print(f"  Dashboard ✓ {r['ticker']} {action} @ {price}", flush=True)
 
     msg = format_message(results, args.date)
     print(msg)

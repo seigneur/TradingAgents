@@ -94,9 +94,17 @@ def format_message(results: list[dict], analysis_date: str) -> str:
         action = decision.get("action", "—").upper() if isinstance(decision, dict) else str(decision).upper()
         summary = decision.get("summary", "") if isinstance(decision, dict) else ""
 
-        emoji = {"BUY": "🟢", "SELL": "🔴", "HOLD": "🟡", "SHORT": "🔻"}.get(action, "⚪")
+        emoji = {
+            "BUY": "🟢", "OVERWEIGHT": "🟢",
+            "SELL": "🔴", "SHORT": "🔻", "UNDERWEIGHT": "🔴",
+            "HOLD": "🟡",
+        }.get(action, "⚪")
+        label = {
+            "OVERWEIGHT": "OVERWEIGHT (long bias)",
+            "UNDERWEIGHT": "UNDERWEIGHT (short bias)",
+        }.get(action, action)
 
-        lines.append(f"{emoji} <b>{ticker}</b>: {action}")
+        lines.append(f"{emoji} <b>{ticker}</b>: {label}")
         if summary:
             wrapped = textwrap.shorten(summary, width=280, placeholder="…")
             lines.append(f"  {html.escape(wrapped)}")

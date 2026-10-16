@@ -32,6 +32,32 @@ def get_close_price(ticker: str, analysis_date: str) -> float | None:
     return None
 
 
+def get_price_for_date(ticker: str, target_date: date) -> float | None:
+    try:
+        import yfinance as yf
+        today = date.today()
+        if target_date >= today:
+            hist = yf.Ticker(ticker).history(period="1d")
+        else:
+            hist = yf.Ticker(ticker).history(start=str(target_date), end=str(target_date + timedelta(days=4)))
+        if not hist.empty:
+            return float(hist["Close"].iloc[0])
+    except Exception:
+        pass
+    return None
+
+
+def get_signal_return(ticker: str, signal: dict, days: int) -> float | None:
+    entry = signal.get("price_at_signal")
+    if not entry:
+        return None
+    analysis_dt = date.fromisoformat(signal["analysis_date"])
+    exit_price = get_price_for_date(ticker, analysis_dt + timedelta(days=days))
+    if exit_price is None:
+        return None
+    return (exit_price - entry) / entry * 100
+
+
 def fetch_memory(dashboard_url: str, ticker: str, limit: int = 10) -> list[dict]:
     try:
         resp = requests.get(f"{dashboard_url}/api/signals", params={"ticker": ticker, "limit": limit}, timeout=10)
@@ -86,8 +112,21 @@ def run_analysis(ticker: str, analysis_date: str, provider: str, debug: bool) ->
     return {"decision": decision, "state": state}
 
 
+def format_return(ret: float | None, action: str) -> str:
+    if ret is None:
+        return "—"
+    bullish = action in ("BUY", "OVERWEIGHT")
+    bearish = action in ("SELL", "SHORT", "UNDERWEIGHT")
+    correct = (bullish and ret > 0) or (bearish and ret < 0)
+    sign = "+" if ret >= 0 else ""
+    mark = "✓" if correct else "✗"
+    return f"{sign}{ret:.1f}% {mark}"
+
+
 def format_message(results: list[dict], analysis_date: str) -> str:
     lines = [f"<b>📊 Trading Signals — {analysis_date}</b>\n"]
+    analysis_dt = date.fromisoformat(analysis_date)
+
     for r in results:
         ticker = r["ticker"]
         decision = r.get("decision", {})
@@ -108,8 +147,22 @@ def format_message(results: list[dict], analysis_date: str) -> str:
         if summary:
             wrapped = textwrap.shorten(summary, width=280, placeholder="…")
             lines.append(f"  {html.escape(wrapped)}")
-        # Trend from memory
+
+        # 1d and 5d returns from past signals
         memory = r.get("memory", [])
+        memory_by_date = {m["analysis_date"]: m for m in memory}
+        sig_1d = memory_by_date.get(str(analysis_dt - timedelta(days=1)))
+        sig_5d = memory_by_date.get(str(analysis_dt - timedelta(days=5)))
+        ret1 = get_signal_return(ticker, sig_1d, 1) if sig_1d else None
+        ret5 = get_signal_return(ticker, sig_5d, 5) if sig_5d else None
+        if ret1 is not None or ret5 is not None:
+            prev_action_1d = sig_1d["action"].upper() if sig_1d else action
+            prev_action_5d = sig_5d["action"].upper() if sig_5d else action
+            r1_str = format_return(ret1, prev_action_1d)
+            r5_str = format_return(ret5, prev_action_5d)
+            lines.append(f"  <code>1d: {r1_str}  5d: {r5_str}</code>")
+
+        # Trend from memory
         if memory:
             recent = [m["action"] for m in memory[:3]]
             streak = len(set(recent)) == 1

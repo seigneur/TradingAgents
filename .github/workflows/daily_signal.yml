@@ -1,9 +1,9 @@
 name: Daily Trading Signal
 
 on:
-  schedule:
-    # 00:30 UTC = 08:30 SGT — markets have opened, overnight macro digested
-    - cron: '30 0 * * 1-5'
+  # schedule disabled — re-enable when Claude credits are topped up
+  # schedule:
+  #   - cron: '30 0 * * 1-5'
   workflow_dispatch:
     inputs:
       tickers:

@@ -156,7 +156,7 @@ def format_ta(t: dict) -> list[str]:
         sma = f"{'above' if t['above20'] else 'below'} SMA20, {'above' if t['above50'] else 'below'} SMA50"
     macd = "MACD ▲" if t["macd_hist"] > 0 else "MACD ▼"
     return [
-        f"{bars} <b>Momentum {score}/4</b> · {label}",
+        f"{bars} <b>Momentum {score}/4</b> · {label}\n",
         f"RSI {t['rsi']:.0f}{rsi_note} · {macd} · {sma} · 7d {t['chg7']:+.1f}%",
     ]
 
@@ -242,7 +242,8 @@ ACTION_STYLE = {
 }
 
 
-def format_message(results: list[dict], analysis_date: str) -> str:
+def format_blocks(results: list[dict], analysis_date: str) -> list[str]:
+    """Message sections: header, one per ticker, footer."""
     analysis_dt = date.fromisoformat(analysis_date)
     session = "🌅 AM" if datetime.now(timezone.utc).hour < 12 else "🌙 PM"
     blocks = [f"<b>📊 Trading Signals</b>\n{analysis_dt:%a %d %b %Y} · {session}"]
@@ -301,13 +302,13 @@ def format_message(results: list[dict], analysis_date: str) -> str:
         blocks.append("\n".join(lines))
 
     blocks.append("<i>🤖 TradingAgents · not financial advice</i>")
-    return "\n\n".join(blocks)
+    return blocks
 
 
-def split_message(msg: str, limit: int = 4000) -> list[str]:
-    """Split on blank lines (ticker blocks) to stay under Telegram's 4096-char limit."""
+def split_message(blocks: list[str], limit: int = 4000) -> list[str]:
+    """Pack whole sections into messages under Telegram's 4096-char limit."""
     chunks, cur = [], ""
-    for block in msg.split("\n\n"):
+    for block in blocks:
         if cur and len(cur) + len(block) + 2 > limit:
             chunks.append(cur)
             cur = block
@@ -366,9 +367,9 @@ def main():
             post_to_dashboard(dashboard_url, dashboard_secret, r["ticker"], action, args.date, price, summary)
             print(f"  Dashboard ✓ {r['ticker']} {action} @ {price}", flush=True)
 
-    msg = format_message(results, args.date)
-    print(msg)
-    for chunk in split_message(msg):
+    blocks = format_blocks(results, args.date)
+    print("\n\n".join(blocks))
+    for chunk in split_message(blocks):
         send_telegram(token, chat_id, chunk)
     print("Sent to Telegram ✓")
 

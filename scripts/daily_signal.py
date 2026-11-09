@@ -9,6 +9,7 @@ Usage:
 import argparse
 import html
 import os
+import re
 import sys
 import textwrap
 from datetime import date, datetime, timedelta, timezone
@@ -146,7 +147,6 @@ def format_ta(t: dict) -> list[str]:
     """Two plain-text lines (no <code>, so they wrap cleanly on a phone)."""
     score = t["score"]
     label = {4: "strong bullish", 3: "bullish", 2: "mixed", 1: "bearish", 0: "strong bearish"}[score]
-    bars = "🟩" * score + "🟥" * (4 - score)
     rsi_note = " (overbought)" if t["rsi"] >= 70 else " (oversold)" if t["rsi"] <= 30 else ""
     if t["above20"] and t["above50"]:
         sma = "above SMA20/50"
@@ -154,11 +154,15 @@ def format_ta(t: dict) -> list[str]:
         sma = "below SMA20/50"
     else:
         sma = f"{'above' if t['above20'] else 'below'} SMA20, {'above' if t['above50'] else 'below'} SMA50"
-    macd = "MACD ▲" if t["macd_hist"] > 0 else "MACD ▼"
+    macd = "MACD up" if t["macd_hist"] > 0 else "MACD down"
     return [
-        f"{bars} <b>Momentum {score}/4</b> · {label}\n",
+        f"<b>Momentum {score}/4</b> · {label}\n",
         f"RSI {t['rsi']:.0f}{rsi_note} · {macd} · {sma} · 7d {t['chg7']:+.1f}%",
     ]
+
+
+# Emoji / pictographs the model may add to the debate summary.
+EMOJI_RE = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F\u200D]")
 
 
 def debate_blurb(llm, state: dict) -> dict:
@@ -186,7 +190,7 @@ def debate_blurb(llm, state: dict) -> dict:
         for line in text.splitlines():
             key, _, val = line.partition(":")
             key = key.strip().strip("*").upper()
-            val = val.replace("*", "").replace("`", "").strip(" _\"'")
+            val = EMOJI_RE.sub("", val.replace("*", "").replace("`", "")).strip(" _\"'")
             if key in ("BULL", "BEAR", "WHY") and val:
                 out[key] = textwrap.shorten(val, width=110, placeholder="…")
         return out
@@ -228,25 +232,21 @@ def format_return(ret: float | None, action: str) -> str:
     bearish = action in ("SELL", "SHORT", "UNDERWEIGHT")
     correct = (bullish and ret > 0) or (bearish and ret < 0)
     sign = "+" if ret >= 0 else ""
-    mark = "✓" if correct else "✗"
+    mark = "hit" if correct else "miss"
     return f"{sign}{ret:.1f}% {mark}"
 
 
-ACTION_STYLE = {
-    "BUY": ("🟢", "BUY"),
-    "OVERWEIGHT": ("🟢", "OVERWEIGHT · long bias"),
-    "HOLD": ("🟡", "HOLD"),
-    "UNDERWEIGHT": ("🔴", "UNDERWEIGHT · short bias"),
-    "SELL": ("🔴", "SELL"),
-    "SHORT": ("🔻", "SHORT"),
+ACTION_LABEL = {
+    "OVERWEIGHT": "OVERWEIGHT · long bias",
+    "UNDERWEIGHT": "UNDERWEIGHT · short bias",
 }
 
 
 def format_blocks(results: list[dict], analysis_date: str) -> list[str]:
     """Message sections: header, one per ticker, footer."""
     analysis_dt = date.fromisoformat(analysis_date)
-    session = "🌅 AM" if datetime.now(timezone.utc).hour < 12 else "🌙 PM"
-    blocks = [f"<b>📊 Trading Signals</b>\n{analysis_dt:%a %d %b %Y} · {session}"]
+    session = "AM" if datetime.now(timezone.utc).hour < 12 else "PM"
+    blocks = [f"<b>Trading Signals</b>\n{analysis_dt:%a %d %b %Y} · {session}"]
 
     for r in results:
         ticker = r["ticker"]
@@ -254,11 +254,9 @@ def format_blocks(results: list[dict], analysis_date: str) -> list[str]:
         decision = r.get("decision", {})
         action = decision.get("action", "—").upper() if isinstance(decision, dict) else str(decision).upper()
         summary = decision.get("summary", "") if isinstance(decision, dict) else ""
-        emoji, label = ACTION_STYLE.get(action, ("⚪", action))
-        if r.get("error"):
-            emoji, label = "⚠️", "analysis failed"
+        label = "analysis failed" if r.get("error") else ACTION_LABEL.get(action, action)
 
-        lines = [f"{emoji} <b>{name}</b> — {label}"]
+        lines = [f"<b>{name}</b> — {label}"]
         cmd = trade_command(ticker, action)
         if cmd:
             lines.append(f"<code>{cmd}</code>")
@@ -268,9 +266,9 @@ def format_blocks(results: list[dict], analysis_date: str) -> list[str]:
         # Debate + summary collapsed by default; tap to expand.
         quote = []
         blurb = r.get("blurb") or {}
-        for key, icon in (("BULL", "🐂"), ("BEAR", "🐻"), ("WHY", "⚖️")):
+        for key, title in (("BULL", "Bull"), ("BEAR", "Bear"), ("WHY", "Why")):
             if blurb.get(key):
-                quote.append(f"{icon} {html.escape(blurb[key])}")
+                quote.append(f"<b>{title}:</b> {html.escape(blurb[key])}")
         if summary:
             quote.append(html.escape(textwrap.shorten(summary, width=280, placeholder="…")))
         if quote:
@@ -291,7 +289,7 @@ def format_blocks(results: list[dict], analysis_date: str) -> list[str]:
         if memory:
             recent = [m["action"].upper() for m in memory[:3]]
             if len(set(recent)) == 1:
-                record.append(f"🔁 {len(recent)}× {recent[0].lower()}")
+                record.append(f"{len(recent)}x {recent[0].lower()} in a row")
             else:
                 record.append("prev " + " → ".join(a.lower() for a in reversed(recent)))
         if record:
@@ -301,7 +299,7 @@ def format_blocks(results: list[dict], analysis_date: str) -> list[str]:
             lines.append(f"<i>{html.escape(textwrap.shorten(str(r['error']), width=200, placeholder='…'))}</i>")
         blocks.append("\n".join(lines))
 
-    blocks.append("<i>🤖 TradingAgents · not financial advice</i>")
+    blocks.append("<i>TradingAgents · not financial advice</i>")
     return blocks
 
 

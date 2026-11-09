@@ -1,9 +1,8 @@
 name: Daily Trading Signal
 
 on:
-  # schedule disabled — re-enable when Claude credits are topped up
-  # schedule:
-  #   - cron: '30 0 * * 1-5'
+  schedule:
+    - cron: '0 */3 * * *'
   workflow_dispatch:
     inputs:
       tickers:

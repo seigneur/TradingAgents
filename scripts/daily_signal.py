@@ -143,14 +143,21 @@ def compute_ta(ticker: str, analysis_date: str) -> dict | None:
 
 
 def format_ta(t: dict) -> list[str]:
-    label = {4: "strong bullish", 3: "bullish", 2: "mixed", 1: "bearish", 0: "strong bearish"}[t["score"]]
-    bars = "▰" * t["score"] + "▱" * (4 - t["score"])
-    rsi_note = " overbought" if t["rsi"] >= 70 else " oversold" if t["rsi"] <= 30 else ""
-    sma = lambda above, n: f"{'&gt;' if above else '&lt;'}SMA{n}"  # HTML parse mode
+    """Two plain-text lines (no <code>, so they wrap cleanly on a phone)."""
+    score = t["score"]
+    label = {4: "strong bullish", 3: "bullish", 2: "mixed", 1: "bearish", 0: "strong bearish"}[score]
+    bars = "🟩" * score + "🟥" * (4 - score)
+    rsi_note = " (overbought)" if t["rsi"] >= 70 else " (oversold)" if t["rsi"] <= 30 else ""
+    if t["above20"] and t["above50"]:
+        sma = "above SMA20/50"
+    elif not t["above20"] and not t["above50"]:
+        sma = "below SMA20/50"
+    else:
+        sma = f"{'above' if t['above20'] else 'below'} SMA20, {'above' if t['above50'] else 'below'} SMA50"
+    macd = "MACD ▲" if t["macd_hist"] > 0 else "MACD ▼"
     return [
-        f"  <code>RSI {t['rsi']:.0f}{rsi_note} · MACD {'▲' if t['macd_hist'] > 0 else '▼'} · "
-        f"{sma(t['above20'], 20)} {sma(t['above50'], 50)} · 7d {t['chg7']:+.1f}%</code>",
-        f"  Momentum {bars} {label}",
+        f"{bars} <b>Momentum {score}/4</b> · {label}",
+        f"RSI {t['rsi']:.0f}{rsi_note} · {macd} · {sma} · 7d {t['chg7']:+.1f}%",
     ]
 
 
@@ -163,10 +170,12 @@ def debate_blurb(llm, state: dict) -> dict:
     if not (bull or bear):
         return {}
     prompt = (
-        "Condense this trading debate for a Telegram alert. Reply with exactly three lines and nothing else:\n"
-        "BULL: <strongest bull argument, max 110 chars>\n"
-        "BEAR: <strongest bear argument, max 110 chars>\n"
-        "WHY: <why the final decision went the way it did, max 110 chars>\n\n"
+        "Condense this trading debate for a phone notification. Reply with exactly three lines and "
+        "nothing else. Plain text only: no markdown, no asterisks, no quotes. Each line at most 90 "
+        "characters; use terse fragments, not sentences.\n"
+        "BULL: <strongest bull argument>\n"
+        "BEAR: <strongest bear argument>\n"
+        "WHY: <why the final decision went the way it did>\n\n"
         f"=== BULL ===\n{bull}\n\n=== BEAR ===\n{bear}\n\n=== FINAL DECISION ===\n{final}"
     )
     try:
@@ -177,9 +186,9 @@ def debate_blurb(llm, state: dict) -> dict:
         for line in text.splitlines():
             key, _, val = line.partition(":")
             key = key.strip().strip("*").upper()
-            val = val.strip().strip("*").strip()
+            val = val.replace("*", "").replace("`", "").strip(" _\"'")
             if key in ("BULL", "BEAR", "WHY") and val:
-                out[key] = textwrap.shorten(val, width=140, placeholder="…")
+                out[key] = textwrap.shorten(val, width=110, placeholder="…")
         return out
     except Exception as exc:
         print(f"  Debate blurb failed: {exc}", file=sys.stderr)
@@ -223,66 +232,76 @@ def format_return(ret: float | None, action: str) -> str:
     return f"{sign}{ret:.1f}% {mark}"
 
 
+ACTION_STYLE = {
+    "BUY": ("🟢", "BUY"),
+    "OVERWEIGHT": ("🟢", "OVERWEIGHT · long bias"),
+    "HOLD": ("🟡", "HOLD"),
+    "UNDERWEIGHT": ("🔴", "UNDERWEIGHT · short bias"),
+    "SELL": ("🔴", "SELL"),
+    "SHORT": ("🔻", "SHORT"),
+}
+
+
 def format_message(results: list[dict], analysis_date: str) -> str:
-    lines = [f"<b>📊 Trading Signals — {analysis_date}</b>\n"]
     analysis_dt = date.fromisoformat(analysis_date)
+    session = "🌅 AM" if datetime.now(timezone.utc).hour < 12 else "🌙 PM"
+    blocks = [f"<b>📊 Trading Signals</b>\n{analysis_dt:%a %d %b %Y} · {session}"]
 
     for r in results:
         ticker = r["ticker"]
+        name = ticker[:-4] if ticker.endswith("-USD") else ticker
         decision = r.get("decision", {})
         action = decision.get("action", "—").upper() if isinstance(decision, dict) else str(decision).upper()
         summary = decision.get("summary", "") if isinstance(decision, dict) else ""
+        emoji, label = ACTION_STYLE.get(action, ("⚪", action))
+        if r.get("error"):
+            emoji, label = "⚠️", "analysis failed"
 
-        emoji = {
-            "BUY": "🟢", "OVERWEIGHT": "🟢",
-            "SELL": "🔴", "SHORT": "🔻", "UNDERWEIGHT": "🔴",
-            "HOLD": "🟡",
-        }.get(action, "⚪")
-        label = {
-            "OVERWEIGHT": "OVERWEIGHT (long bias)",
-            "UNDERWEIGHT": "UNDERWEIGHT (short bias)",
-        }.get(action, action)
-
-        lines.append(f"{emoji} <b>{ticker}</b>: {label}")
+        lines = [f"{emoji} <b>{name}</b> — {label}"]
         cmd = trade_command(ticker, action)
         if cmd:
-            lines.append(f"  👉 <code>{cmd}</code>")
+            lines.append(f"<code>{cmd}</code>")
         if r.get("ta"):
             lines.extend(format_ta(r["ta"]))
+
+        # Debate + summary collapsed by default; tap to expand.
+        quote = []
         blurb = r.get("blurb") or {}
         for key, icon in (("BULL", "🐂"), ("BEAR", "🐻"), ("WHY", "⚖️")):
             if blurb.get(key):
-                lines.append(f"  {icon} {html.escape(blurb[key])}")
+                quote.append(f"{icon} {html.escape(blurb[key])}")
         if summary:
-            wrapped = textwrap.shorten(summary, width=280, placeholder="…")
-            lines.append(f"  {html.escape(wrapped)}")
+            quote.append(html.escape(textwrap.shorten(summary, width=280, placeholder="…")))
+        if quote:
+            lines.append("<blockquote expandable>" + "\n".join(quote) + "</blockquote>")
 
-        # 1d and 5d returns from past signals
+        # Track record: returns of past signals + recent streak
         memory = r.get("memory", [])
         memory_by_date = {m["analysis_date"]: m for m in memory}
         sig_1d = memory_by_date.get(str(analysis_dt - timedelta(days=1)))
         sig_5d = memory_by_date.get(str(analysis_dt - timedelta(days=5)))
         ret1 = get_signal_return(ticker, sig_1d, 1) if sig_1d else None
         ret5 = get_signal_return(ticker, sig_5d, 5) if sig_5d else None
-        if ret1 is not None or ret5 is not None:
-            prev_action_1d = sig_1d["action"].upper() if sig_1d else action
-            prev_action_5d = sig_5d["action"].upper() if sig_5d else action
-            r1_str = format_return(ret1, prev_action_1d)
-            r5_str = format_return(ret5, prev_action_5d)
-            lines.append(f"  <code>1d: {r1_str}  5d: {r5_str}</code>")
-
-        # Trend from memory
+        record = []
+        if ret1 is not None:
+            record.append(f"1d {format_return(ret1, sig_1d['action'].upper())}")
+        if ret5 is not None:
+            record.append(f"5d {format_return(ret5, sig_5d['action'].upper())}")
         if memory:
-            recent = [m["action"] for m in memory[:3]]
-            streak = len(set(recent)) == 1
-            trend_str = " · ".join(recent)
-            lines.append(f"  <i>Last {len(recent)}: {html.escape(trend_str)}{'  🔁' if streak else ''}</i>")
-        if r.get("error"):
-            lines.append(f"  ⚠️ {r['error']}")
-        lines.append("")
+            recent = [m["action"].upper() for m in memory[:3]]
+            if len(set(recent)) == 1:
+                record.append(f"🔁 {len(recent)}× {recent[0].lower()}")
+            else:
+                record.append("prev " + " → ".join(a.lower() for a in reversed(recent)))
+        if record:
+            lines.append(f"<i>{html.escape(' · '.join(record))}</i>")
 
-    lines.append("<i>🤖 TradingAgents · Claude · yfinance</i>")
-    return "\n".join(lines)
+        if r.get("error"):
+            lines.append(f"<i>{html.escape(textwrap.shorten(str(r['error']), width=200, placeholder='…'))}</i>")
+        blocks.append("\n".join(lines))
+
+    blocks.append("<i>🤖 TradingAgents · not financial advice</i>")
+    return "\n\n".join(blocks)
 
 
 def split_message(msg: str, limit: int = 4000) -> list[str]:

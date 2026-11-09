@@ -2,14 +2,16 @@
 Daily trading signal runner — sends analysis to Telegram and records to dashboard.
 Usage:
   python scripts/daily_signal.py --tickers BTC-USD ETH-USD --date 2026-09-30
-  ANALYSIS_DATE is optional; defaults to yesterday.
+  --date is optional. Default depends on when it runs (UTC):
+    before 12:00 UTC (morning SGT run) -> yesterday, i.e. the last full daily candle
+    from 12:00 UTC (evening SGT run)   -> today, using intraday data so far
 """
 import argparse
 import html
 import os
 import sys
 import textwrap
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import requests
 
@@ -112,6 +114,32 @@ def run_analysis(ticker: str, analysis_date: str, provider: str, debug: bool) ->
     return {"decision": decision, "state": state}
 
 
+def default_analysis_date(now: datetime | None = None) -> str:
+    now = now or datetime.now(timezone.utc)
+    d = now.date() if now.hour >= 12 else now.date() - timedelta(days=1)
+    return str(d)
+
+
+# Sizing for the suggested Coinbase bot commands (bot caps orders at $300).
+TRADE_MAX_USD = 300.0
+TRADE_USD_STRONG = float(os.getenv("TRADE_USD_STRONG", "100"))  # BUY / SELL
+TRADE_USD_LEAN = float(os.getenv("TRADE_USD_LEAN", "50"))       # OVERWEIGHT / UNDERWEIGHT
+TRADE_LEVERAGE = int(os.getenv("TRADE_LEVERAGE", "2"))
+
+
+def trade_command(ticker: str, action: str) -> str | None:
+    """Coinbase bot command for a signal, e.g. '/long BTC 100 2'. Crypto (-USD) only."""
+    if not ticker.endswith("-USD"):
+        return None
+    side = {"BUY": "long", "OVERWEIGHT": "long",
+            "SELL": "short", "SHORT": "short", "UNDERWEIGHT": "short"}.get(action)
+    if not side:
+        return None
+    usd = TRADE_USD_STRONG if action in ("BUY", "SELL", "SHORT") else TRADE_USD_LEAN
+    usd = min(usd, TRADE_MAX_USD)
+    return f"/{side} {ticker[:-4]} {usd:g} {TRADE_LEVERAGE}"
+
+
 def format_return(ret: float | None, action: str) -> str:
     if ret is None:
         return "—"
@@ -144,6 +172,9 @@ def format_message(results: list[dict], analysis_date: str) -> str:
         }.get(action, action)
 
         lines.append(f"{emoji} <b>{ticker}</b>: {label}")
+        cmd = trade_command(ticker, action)
+        if cmd:
+            lines.append(f"  👉 <code>{cmd}</code>")
         if summary:
             wrapped = textwrap.shorten(summary, width=280, placeholder="…")
             lines.append(f"  {html.escape(wrapped)}")
@@ -179,7 +210,7 @@ def format_message(results: list[dict], analysis_date: str) -> str:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--tickers", nargs="+", default=["BTC-USD", "ETH-USD", "XRP-USD", "LINK-USD", "GLD"])
-    parser.add_argument("--date", default=str(date.today() - timedelta(days=1)))
+    parser.add_argument("--date", default=default_analysis_date())
     parser.add_argument("--provider", default=os.getenv("TRADINGAGENTS_LLM_PROVIDER", "anthropic"))
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()

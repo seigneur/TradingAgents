@@ -303,6 +303,46 @@ def format_blocks(results: list[dict], analysis_date: str) -> list[str]:
     return blocks
 
 
+def get_live_price(ticker: str) -> float | None:
+    try:
+        import yfinance as yf
+        hist = yf.Ticker(ticker).history(period="1d", interval="5m")
+        if not hist.empty:
+            return float(hist["Close"].dropna().iloc[-1])
+    except Exception as exc:
+        print(f"  Live price failed for {ticker}: {exc}", file=sys.stderr)
+    return None
+
+
+def store_latest_signals(table_name: str, results: list[dict], analysis_date: str) -> None:
+    """Save each ticker's newest prediction to DynamoDB for the hourly watcher (scripts/signal_watch.py).
+
+    Entry price is the live price when the signal is sent, since that's when a trade would be placed.
+    """
+    import boto3
+    from decimal import Decimal
+
+    table = boto3.resource("dynamodb").Table(table_name)
+    sent_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    for r in results:
+        if r.get("error"):
+            continue
+        decision = r.get("decision", {})
+        action = decision.get("action", "").upper() if isinstance(decision, dict) else str(decision).upper()
+        price = get_live_price(r["ticker"])
+        if not price:
+            continue
+        table.put_item(Item={
+            "ticker": r["ticker"],
+            "action": action,
+            "entry_price": Decimal(str(round(price, 6))),
+            "analysis_date": analysis_date,
+            "sent_at": sent_at,
+            "alerted_step": 0,  # adverse-move alerts already sent for this prediction
+        })
+        print(f"  Stored latest {r['ticker']} {action} @ {price}", flush=True)
+
+
 def split_message(blocks: list[str], limit: int = 4000) -> list[str]:
     """Pack whole sections into messages under Telegram's 4096-char limit."""
     chunks, cur = [], ""
@@ -364,6 +404,14 @@ def main():
             price = get_close_price(r["ticker"], args.date)
             post_to_dashboard(dashboard_url, dashboard_secret, r["ticker"], action, args.date, price, summary)
             print(f"  Dashboard ✓ {r['ticker']} {action} @ {price}", flush=True)
+
+    # Track the newest prediction for the hourly adverse-move watcher. Skip backfills of old dates.
+    signals_table = os.environ.get("SIGNALS_TABLE", "")
+    if signals_table and args.date >= str(date.today() - timedelta(days=1)):
+        try:
+            store_latest_signals(signals_table, results, args.date)
+        except Exception as exc:
+            print(f"  Storing latest signals failed: {exc}", file=sys.stderr)
 
     blocks = format_blocks(results, args.date)
     print("\n\n".join(blocks))

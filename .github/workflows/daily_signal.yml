@@ -12,6 +12,10 @@ on:
         description: 'Analysis date YYYY-MM-DD (default: yesterday)'
         default: ''
 
+permissions:
+  contents: read
+  id-token: write  # OIDC login to AWS (no stored AWS keys)
+
 jobs:
   signal:
     runs-on: ubuntu-latest
@@ -20,13 +24,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Saves the latest prediction per ticker to DynamoDB for the hourly watcher.
+      # Skipped until the repo variable AWS_ROLE_ARN is set (see infra/aws/README.md).
+      - name: AWS credentials
+        if: ${{ vars.AWS_ROLE_ARN != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: pip
 
       - name: Install dependencies
-        run: pip install -e .
+        run: pip install -e . boto3
 
       - name: Run daily signal
         env:
@@ -37,6 +50,7 @@ jobs:
           TRADINGAGENTS_LLM_PROVIDER: anthropic
           DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}
           DASHBOARD_SECRET: ${{ secrets.DASHBOARD_SECRET }}
+          SIGNALS_TABLE: ${{ vars.AWS_ROLE_ARN != '' && 'tradingagents-signals' || '' }}
         run: |
           TICKERS="${{ github.event.inputs.tickers || 'BTC-USD ETH-USD XRP-USD LINK-USD GLD' }}"
           DATE_ARG="${{ github.event.inputs.date }}"

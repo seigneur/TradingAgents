@@ -111,7 +111,79 @@ def run_analysis(ticker: str, analysis_date: str, provider: str, debug: bool) ->
 
     ta = TradingAgentsGraph(debug=debug, config=config)
     state, decision = ta.propagate(ticker, analysis_date)
-    return {"decision": decision, "state": state}
+    return {"decision": decision, "state": state, "llm": ta.quick_thinking_llm}
+
+
+def compute_ta(ticker: str, analysis_date: str) -> dict | None:
+    """RSI14, MACD(12,26,9) histogram, price vs SMA20/50, 7d change, as of analysis_date."""
+    try:
+        import yfinance as yf
+        d = date.fromisoformat(analysis_date)
+        hist = yf.Ticker(ticker).history(start=str(d - timedelta(days=150)), end=str(d + timedelta(days=1)))
+        close = hist["Close"].dropna()
+        if len(close) < 50:
+            return None
+        delta = close.diff()
+        gain = delta.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
+        loss = (-delta.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
+        rsi = float((100 - 100 / (1 + gain / loss)).iloc[-1])
+        macd = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
+        macd_hist = float((macd - macd.ewm(span=9, adjust=False).mean()).iloc[-1])
+        last = float(close.iloc[-1])
+        sma20 = float(close.rolling(20).mean().iloc[-1])
+        sma50 = float(close.rolling(50).mean().iloc[-1])
+        lookback = 7 if ticker.endswith("-USD") else 5  # crypto trades daily, ETFs on weekdays
+        chg7 = (last / float(close.iloc[-1 - lookback]) - 1) * 100
+        score = sum([last > sma20, last > sma50, macd_hist > 0, rsi > 50])
+        return {"rsi": rsi, "macd_hist": macd_hist, "above20": last > sma20,
+                "above50": last > sma50, "chg7": chg7, "score": score}
+    except Exception as exc:
+        print(f"  TA failed for {ticker}: {exc}", file=sys.stderr)
+        return None
+
+
+def format_ta(t: dict) -> list[str]:
+    label = {4: "strong bullish", 3: "bullish", 2: "mixed", 1: "bearish", 0: "strong bearish"}[t["score"]]
+    bars = "▰" * t["score"] + "▱" * (4 - t["score"])
+    rsi_note = " overbought" if t["rsi"] >= 70 else " oversold" if t["rsi"] <= 30 else ""
+    sma = lambda above, n: f"{'&gt;' if above else '&lt;'}SMA{n}"  # HTML parse mode
+    return [
+        f"  <code>RSI {t['rsi']:.0f}{rsi_note} · MACD {'▲' if t['macd_hist'] > 0 else '▼'} · "
+        f"{sma(t['above20'], 20)} {sma(t['above50'], 50)} · 7d {t['chg7']:+.1f}%</code>",
+        f"  Momentum {bars} {label}",
+    ]
+
+
+def debate_blurb(llm, state: dict) -> dict:
+    """Condense the bull/bear debate and the final decision into three short lines."""
+    debate = state.get("investment_debate_state") or {}
+    bull = (debate.get("bull_history") or "")[-4000:]
+    bear = (debate.get("bear_history") or "")[-4000:]
+    final = (state.get("final_trade_decision") or "")[-3000:]
+    if not (bull or bear):
+        return {}
+    prompt = (
+        "Condense this trading debate for a Telegram alert. Reply with exactly three lines and nothing else:\n"
+        "BULL: <strongest bull argument, max 110 chars>\n"
+        "BEAR: <strongest bear argument, max 110 chars>\n"
+        "WHY: <why the final decision went the way it did, max 110 chars>\n\n"
+        f"=== BULL ===\n{bull}\n\n=== BEAR ===\n{bear}\n\n=== FINAL DECISION ===\n{final}"
+    )
+    try:
+        text = llm.invoke(prompt).content
+        if isinstance(text, list):  # content blocks
+            text = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in text)
+        out = {}
+        for line in text.splitlines():
+            key, _, val = line.partition(":")
+            key = key.strip().strip("*").upper()
+            val = val.strip().strip("*").strip()
+            if key in ("BULL", "BEAR", "WHY") and val:
+                out[key] = textwrap.shorten(val, width=140, placeholder="…")
+        return out
+    except Exception as exc:
+        print(f"  Debate blurb failed: {exc}", file=sys.stderr)
+        return {}
 
 
 def default_analysis_date(now: datetime | None = None) -> str:
@@ -175,6 +247,12 @@ def format_message(results: list[dict], analysis_date: str) -> str:
         cmd = trade_command(ticker, action)
         if cmd:
             lines.append(f"  👉 <code>{cmd}</code>")
+        if r.get("ta"):
+            lines.extend(format_ta(r["ta"]))
+        blurb = r.get("blurb") or {}
+        for key, icon in (("BULL", "🐂"), ("BEAR", "🐻"), ("WHY", "⚖️")):
+            if blurb.get(key):
+                lines.append(f"  {icon} {html.escape(blurb[key])}")
         if summary:
             wrapped = textwrap.shorten(summary, width=280, placeholder="…")
             lines.append(f"  {html.escape(wrapped)}")
@@ -207,6 +285,19 @@ def format_message(results: list[dict], analysis_date: str) -> str:
     return "\n".join(lines)
 
 
+def split_message(msg: str, limit: int = 4000) -> list[str]:
+    """Split on blank lines (ticker blocks) to stay under Telegram's 4096-char limit."""
+    chunks, cur = [], ""
+    for block in msg.split("\n\n"):
+        if cur and len(cur) + len(block) + 2 > limit:
+            chunks.append(cur)
+            cur = block
+        else:
+            cur = f"{cur}\n\n{block}" if cur else block
+    chunks.append(cur)
+    return chunks
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--tickers", nargs="+", default=["BTC-USD", "ETH-USD", "XRP-USD", "LINK-USD", "GLD"])
@@ -236,10 +327,13 @@ def main():
 
         try:
             r = run_analysis(ticker, args.date, args.provider, args.debug)
+            llm = r.pop("llm")
+            r["blurb"] = debate_blurb(llm, r["state"])
             results.append({"ticker": ticker, "memory": memory, **r})
         except Exception as exc:
             print(f"  ERROR: {exc}", file=sys.stderr)
             results.append({"ticker": ticker, "memory": memory, "error": str(exc)})
+        results[-1]["ta"] = compute_ta(ticker, args.date)
 
     # Record signals to dashboard
     if dashboard_url and dashboard_secret:
@@ -255,7 +349,8 @@ def main():
 
     msg = format_message(results, args.date)
     print(msg)
-    send_telegram(token, chat_id, msg)
+    for chunk in split_message(msg):
+        send_telegram(token, chat_id, chunk)
     print("Sent to Telegram ✓")
 
 

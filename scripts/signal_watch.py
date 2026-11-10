@@ -14,10 +14,11 @@ Env: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, SIGNALS_TABLE (default tradingagents-
      ALERT_STEP_PCT (default 3), AWS credentials/region as usual for boto3.
 """
 import argparse
+import contextlib
 import html
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import boto3
 import requests
@@ -54,7 +55,7 @@ def format_alert(item: dict, price: float, move: float, adverse: float) -> str:
     side = "long" if action in LONG else "short"
     entry = float(item["entry_price"])
     sent = datetime.fromisoformat(item["sent_at"])
-    hours = (datetime.now(timezone.utc) - sent).total_seconds() / 3600
+    hours = (datetime.now(UTC) - sent).total_seconds() / 3600
     lines = [
         f"<b>Signal alert: {name} moving against {action.lower()}</b>",
         f"{adverse:.1f}% against the {side} call in {hours:.0f}h",
@@ -99,15 +100,13 @@ def main():
             continue
         send_telegram(token, chat_id, msg)
         # Only bump if it's still the same prediction (a new signal may have landed meanwhile).
-        try:
+        with contextlib.suppress(table.meta.client.exceptions.ConditionalCheckFailedException):
             table.update_item(
                 Key={"ticker": ticker},
                 UpdateExpression="SET alerted_step = :s",
                 ConditionExpression="sent_at = :t",
                 ExpressionAttributeValues={":s": step, ":t": item["sent_at"]},
             )
-        except table.meta.client.exceptions.ConditionalCheckFailedException:
-            pass
         print(f"  alert sent for {ticker}")
 
 

@@ -12,7 +12,7 @@ import os
 import re
 import sys
 import textwrap
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 import requests
 
@@ -206,7 +206,7 @@ def debate_blurb(llm, state: dict) -> dict:
 
 
 def default_analysis_date(now: datetime | None = None) -> str:
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     d = now.date() if now.hour >= 12 else now.date() - timedelta(days=1)
     return str(d)
 
@@ -251,7 +251,7 @@ ACTION_LABEL = {
 def format_blocks(results: list[dict], analysis_date: str) -> list[str]:
     """Message sections: header, one per ticker, footer."""
     analysis_dt = date.fromisoformat(analysis_date)
-    session = "AM" if datetime.now(timezone.utc).hour < 12 else "PM"
+    session = "AM" if datetime.now(UTC).hour < 12 else "PM"
     blocks = [f"<b>Trading Signals</b>\n{analysis_dt:%a %d %b %Y} · {session}"]
 
     for r in results:
@@ -325,11 +325,12 @@ def store_latest_signals(table_name: str, results: list[dict], analysis_date: st
 
     Entry price is the live price when the signal is sent, since that's when a trade would be placed.
     """
-    import boto3
     from decimal import Decimal
 
+    import boto3
+
     table = boto3.resource("dynamodb").Table(table_name)
-    sent_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    sent_at = datetime.now(UTC).isoformat(timespec="seconds")
     for r in results:
         if r.get("error"):
             continue

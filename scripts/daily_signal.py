@@ -110,8 +110,14 @@ def run_analysis(ticker: str, analysis_date: str, provider: str, debug: bool) ->
         config["deep_think_llm"] = os.getenv("DEEP_THINK_LLM", "gpt-4o")
         config["quick_think_llm"] = os.getenv("QUICK_THINK_LLM", "gpt-4o-mini")
 
-    ta = TradingAgentsGraph(debug=debug, config=config)
-    state, decision = ta.propagate(ticker, analysis_date)
+    # Crypto pairs run the crypto pipeline: crypto framing in every prompt, crypto Reddit
+    # communities for sentiment, and no fundamentals analyst (there are no company financials).
+    is_crypto = ticker.upper().endswith(("-USD", "-USDT", "-USDC", "-BTC", "-ETH"))
+    asset_type = "crypto" if is_crypto else "stock"
+    analysts = ("market", "social", "news") if is_crypto else ("market", "social", "news", "fundamentals")
+
+    ta = TradingAgentsGraph(selected_analysts=analysts, debug=debug, config=config)
+    state, decision = ta.propagate(ticker, analysis_date, asset_type=asset_type)
     return {"decision": decision, "state": state, "llm": ta.quick_thinking_llm}
 
 

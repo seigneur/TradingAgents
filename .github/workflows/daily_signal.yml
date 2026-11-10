@@ -28,6 +28,7 @@ jobs:
       # Skipped until the repo variable AWS_ROLE_ARN is set (see infra/aws/README.md).
       - name: AWS credentials
         if: ${{ vars.AWS_ROLE_ARN != '' }}
+        continue-on-error: true  # never block the Telegram post on AWS
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}

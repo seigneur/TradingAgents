@@ -6,7 +6,8 @@ The daily workflow saves each ticker's latest prediction to the DynamoDB table
 against the latest prediction.
 
 GitHub Actions logs in to AWS through OIDC, so no AWS keys are stored in GitHub. The role can
-only `PutItem` on that one table, and only from `main` of `seigneur/TradingAgents`.
+only `PutItem` on that one table, and only from `main` of `seigneur/TradingAgents`. The repo uses GitHub's immutable OIDC subject
+(`repo:seigneur@1625844/TradingAgents@1397720142:...`), so the trust policy must use that form.
 
 ## One-time setup (run from the repo root)
 
